@@ -4,16 +4,20 @@ import time
 
 from datetime import datetime
 from dateutil.parser import parse
+from dateutil.tz import tzlocal
 
-# Paths
-discord_webhook_url = "https://discord.com/api/webhooks/your-webhook-ur"
+# Configuration for the alert channels
+DISCORD_WEBHOOK_URL = ""
+
+# Path to the log file
 log_path = "/path/to/eve.json"
 
 # Configurations
-last_checked_line = 0
-waiting_time = 5
-time_between_detection = 30
-detection_history = []
+last_checked_line = 0 # 0 means that the file will be read from the beginning
+waiting_time = 5 # 5 seconds
+time_between_detection = 30 # 30 seconds
+max_elapsed_time = 6000 # 10 minutes
+detection_history = [] # List of detections
 
 def sendToDiscord(
         signature: str,
@@ -56,7 +60,7 @@ def sendToDiscord(
         ]
     }
 
-    response = requests.post(discord_webhook_url, json=embed)
+    response = requests.post(DISCORD_WEBHOOK_URL, json=embed)
 
     if response.status_code == 204:
         print("[*] Notification sent successfully!")
@@ -71,7 +75,6 @@ def createOrUpdateHistory(
         if detection["signature_id"] == signature_id:
             detection["timestamp"] = timestamp
             print("[*] Detection history updated!")
-            print(detection_history)
             return
 
     detection_history.append({
@@ -99,47 +102,56 @@ def shouldSendAlert(
 
     for detection in detection_history:
         # Check if the signature is already in the history
-        contains_signature = False
-        if detection["signature_id"] == signature_id and contains_signature == False:
-            contains_signature = True
-        
-        # If the signature is not in the history, send the alert
-        if not contains_signature:
-            return True
-
-        # If the signature is in the history, check the timespan
         if detection["signature_id"] == signature_id:
+            
+            # If the signature is in the history, check the timespan
             detection_time = parse(detection["timestamp"])
             current_time = parse(alert_timestamp)
 
             detection_timespan = (current_time - detection_time).total_seconds()
-
-            if (current_time - detection_time).total_seconds() >= time_between_detection:
+            if detection_timespan >= time_between_detection:
                 return True
             else:
                 return False
-        
+
+    # If the signature is not in the history, send the alert
+    return True
+    
+def olderThan(seconds:int, timestamp:str):
+    detection_time = parse(timestamp)
+    current_time = datetime.now(tzlocal())
+
+    if (current_time - detection_time).total_seconds() >= seconds:
         return True
 
-
 def checkForDetections():
+    print("[*] Reading log file...")
     global last_checked_line
     try:
-        print("[*] Reading log file...")
         with open(log_path, "r") as file:
-            lines = file.readlines()
-            for i in range(last_checked_line, len(lines)):
+            lines = file.readlines()[last_checked_line:]
+            for i in range(len(lines)):
                 alert = json.loads(lines[i])
+
+                # Check if the line is an alert
                 if not "alert" in alert:
                     continue
 
-                if not shouldSendAlert(
-                    alert["timestamp"],
-                    alert["alert"]["signature_id"]
+                # Check if the alert is older than the max_elapsed_time
+                if olderThan(
+                        max_elapsed_time,
+                        alert["timestamp"]
                     ):
-                    print("[*] Alert already sent! Skipping")
                     continue
 
+                # Check if the alert should be sent based on the history
+                if not shouldSendAlert(
+                        alert["timestamp"],
+                        alert["alert"]["signature_id"]
+                    ):
+                    continue
+
+                # Send the alert to the configured channel
                 sendToDiscord(
                     alert["alert"]["signature"],
                     alert["alert"]["severity"],
@@ -150,6 +162,7 @@ def checkForDetections():
                     alert["timestamp"]
                 )
 
+                # Update the detection history
                 createOrUpdateHistory(
                     alert["timestamp"],
                     alert["alert"]["signature_id"]
@@ -166,9 +179,7 @@ def main():
             time.sleep(waiting_time)
     except KeyboardInterrupt:
         print("[*] Stopping notifier [*]")
-
-
-
+    
 if __name__ == "__main__":
     print("[*] Suricata IDS notifier started... [*]")
     if not fileExists():
