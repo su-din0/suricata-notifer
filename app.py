@@ -7,20 +7,20 @@ from dateutil.parser import parse
 from dateutil.tz import tzlocal
 
 # Configuration for the alert channels
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/00000"
-SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/000000"
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/00000" # Replace with your Discord webhook URL
+SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/000000" # Replace with your Slack webhook URL
 
 SEND_TO_DISCORD = False # Set to True to enable Discord notifications
 SEND_TO_SLACK = False # Set to True to enable Slack notifications
 
 # Path to the log file
-log_path = "eve.json"
+log_path = "/path/to/eve.json"
 
 # Configurations
 last_checked_line = 0 # 0 means that the file will be read from the beginning
 waiting_time = 5 # 5 seconds
 time_between_detection = 30 # 30 seconds
-max_elapsed_time = 6000 # 10 minutes
+max_elapsed_time = 36000 #  1 hour
 detection_history = [] # List of detections
 
 # Colors for the alerts
@@ -55,6 +55,21 @@ def matchSeverity(severity: int):
             return "Informational"
         case _:
             return "Unknown"
+        
+def buildSD(src_ip: str, src_port: int, dst_ip: str, dst_port: int):
+    result = ""
+    if src_port != 0:
+        result += src_ip + ":" + str(src_port)
+    else:
+        result += src_ip
+    result += " ➜ "
+    if dst_port != 0:
+        result += dst_ip + ":" + str(dst_port)
+    else:
+        result += dst_ip
+
+    return result
+
 
 def sendToDiscord(
         signature: str,
@@ -73,17 +88,28 @@ def sendToDiscord(
 
     color = colors["discord"].get(severity, colors["discord"]["default"])
 
-    src_dst = src_ip + ":" + str(src_port) + " ➜ " + dst_ip + ":" + str(dst_port)
     embed = {
         "embeds": [
             {
                 "title": "Suricata Alert",
                 "description": "An alert has been triggered by Suricata IDS.",
                 "fields": [
-                    {"name": "Signature", "value": signature},
-                    {"name": "Severity", "value": matchSeverity(severity)},
-                    {"name": "Timestamp", "value": timestamp},
-                    {"name": "Source ➜ Destination", "value": src_dst},
+                    {
+                        "name": "Signature",
+                        "value": signature
+                    },
+                    {
+                        "name": "Severity",
+                        "value": matchSeverity(severity)
+                    },
+                    {
+                        "name": "Timestamp",
+                        "value": timestamp
+                    },
+                    {
+                        "name": "Source ➜ Destination",
+                        "value": buildSD(src_ip, src_port, dst_ip, dst_port)
+                    },
                 ],
                 "color": color
             }
@@ -111,17 +137,40 @@ def sendToSlack(
         return
 
     print("[*] Sending notification to Slack...")
-    src_dst = src_ip + ":" + str(src_port) + " ➜ " + dst_ip + ":" + str(dst_port)
     payload = {
-        "text": "An alert has been triggered by Suricata IDS.",
+        "text": "*An alert has been triggered by Suricata IDS.*",
         "attachments": [
             {
                 "color": colors["slack"].get(severity, colors["slack"]["default"]),
                 "fields": [
-                    {"title": "Signature", "value": signature},
-                    {"title": "Severity", "value": matchSeverity(severity)},
-                    {"title": "Timestamp", "value": timestamp},
-                    {"title": "Source ➜ Destination", "value": src_dst},
+                    {
+                        "title": "Signature",
+                        "value": signature
+                    },
+                    {
+                        "title": "Severity",
+                        "value": matchSeverity(severity)
+                    },
+                    {
+                        "title": "Timestamp",
+                        "value": timestamp
+                    },
+                    {
+                        "title": "Source ➜ Destination",
+                        "value": buildSD(src_ip, src_port, dst_ip, dst_port)
+                    },
+                ],
+                "actions": [
+                    {
+                        "type": "button",
+                        "text": "Whois Source IP",
+                        "url": f"https://whois.com/whois/{src_ip}"
+                    },
+                    {
+                        "type": "button",
+                        "text": "IP reputation",
+                        "url": f"https://www.abuseipdb.com/check/{src_ip}"
+                    }
                 ]
             }
         ]
@@ -246,6 +295,18 @@ def checkForDetection():
     except Exception as e:
         print("[*] An error occurred while reading log file: " + str(e))
 
+def InternetCheck():
+    try:
+        requests.get("https://www.google.com")
+        return True
+    except requests.ConnectionError:
+        try:
+            requests.get("https://www.cloudflare.com")
+            return True
+        except requests.ConnectionError:
+            return False
+
+# Main function
 def main():
     try:
         while True:
@@ -254,10 +315,24 @@ def main():
     except KeyboardInterrupt:
         print("[*] Stopping notifier [*]")
     
+# Entry point
 if __name__ == "__main__":
     print("[*] Suricata IDS notifier started... [*]")
+
+    # Check if the log file exists
     if not fileExists():
         print("[*] Log file not found! Stoping notifier... [*]")
         exit()
+    
+    # Check if there is internet connection
+    if not InternetCheck():
+        print("[*] No internet connection! Stoping notifier... [*]")
+        exit()
 
+    # Check if at least one alert channel is configured
+    if not SEND_TO_DISCORD and not SEND_TO_SLACK:
+        print("[*] No alert channels configured! Stoping notifier... [*]")
+        exit()
+
+    # Start the notifier
     main()
