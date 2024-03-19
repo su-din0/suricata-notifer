@@ -9,7 +9,7 @@ A service that alerts you when a signature is detected by Suricata IDS.
 ## Available methods 
 
 - ✅ Discord
-- ❌ Slack
+- ✅ Slack
 - ❌ Email
 - ❌ Telegram
 

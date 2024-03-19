@@ -7,10 +7,14 @@ from dateutil.parser import parse
 from dateutil.tz import tzlocal
 
 # Configuration for the alert channels
-DISCORD_WEBHOOK_URL = ""
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/00000"
+SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/000000"
+
+SEND_TO_DISCORD = False # Set to True to enable Discord notifications
+SEND_TO_SLACK = False # Set to True to enable Slack notifications
 
 # Path to the log file
-log_path = "/path/to/eve.json"
+log_path = "eve.json"
 
 # Configurations
 last_checked_line = 0 # 0 means that the file will be read from the beginning
@@ -18,6 +22,39 @@ waiting_time = 5 # 5 seconds
 time_between_detection = 30 # 30 seconds
 max_elapsed_time = 6000 # 10 minutes
 detection_history = [] # List of detections
+
+# Colors for the alerts
+colors = {
+    # For discord you must use the decimal value
+    "discord": {
+        1: 16711680,  # Red
+        2: 15105570,  # Orange
+        3: 16705372,  # Yellow
+        4: 5763719,   # Green
+        "default": 16777215  # White
+    },
+    # For slack you must use the hexadecimal value
+    "slack": {
+        1: "#FF0000",  # Red
+        2: "#FFA500",  # Orange
+        3: "#FFFF00",  # Yellow
+        4: "#008000",  # Green
+        "default": "#FFFFFF"  # White
+    }
+}
+
+def matchSeverity(severity: int):
+    match severity:
+        case 1:
+            return "High"
+        case 2:
+            return "Medium"
+        case 3:
+            return "Low"
+        case 4:
+            return "Informational"
+        case _:
+            return "Unknown"
 
 def sendToDiscord(
         signature: str,
@@ -28,20 +65,13 @@ def sendToDiscord(
         dst_port: int,
         timestamp: str,
     ):
+
+    if not SEND_TO_DISCORD:
+        return
+
     print("[*] Sending notification to Discord...")
 
-    color = 16777215
-    match severity:
-        case 1:
-            color = 16711680 # Red
-        case 2:
-            color = 15105570 # Orange
-        case 3:
-            color = 16705372 # Yellow
-        case 4:
-            color = 5763719 # Green
-        case _:
-            color = 16777215 # White
+    color = colors["discord"].get(severity, colors["discord"]["default"])
 
     src_dst = src_ip + ":" + str(src_port) + " ➜ " + dst_ip + ":" + str(dst_port)
     embed = {
@@ -51,7 +81,7 @@ def sendToDiscord(
                 "description": "An alert has been triggered by Suricata IDS.",
                 "fields": [
                     {"name": "Signature", "value": signature},
-                    {"name": "Severity", "value": severity},
+                    {"name": "Severity", "value": matchSeverity(severity)},
                     {"name": "Timestamp", "value": timestamp},
                     {"name": "Source ➜ Destination", "value": src_dst},
                 ],
@@ -66,6 +96,45 @@ def sendToDiscord(
         print("[*] Notification sent successfully!")
     else:
         print("[*] Failed to send notification!")
+
+def sendToSlack(
+        signature: str,
+        severity: int,
+        src_ip: str,
+        src_port: int,
+        dst_ip: str,
+        dst_port: int,
+        timestamp: str,
+    ):
+
+    if not SEND_TO_SLACK:
+        return
+
+    print("[*] Sending notification to Slack...")
+    src_dst = src_ip + ":" + str(src_port) + " ➜ " + dst_ip + ":" + str(dst_port)
+    payload = {
+        "text": "An alert has been triggered by Suricata IDS.",
+        "attachments": [
+            {
+                "color": colors["slack"].get(severity, colors["slack"]["default"]),
+                "fields": [
+                    {"title": "Signature", "value": signature},
+                    {"title": "Severity", "value": matchSeverity(severity)},
+                    {"title": "Timestamp", "value": timestamp},
+                    {"title": "Source ➜ Destination", "value": src_dst},
+                ]
+            }
+        ]
+    }
+
+    response = requests.post(SLACK_WEBHOOK_URL, json=payload)
+
+    if response.status_code == 200:
+        print("[*] Notification sent successfully!")
+    else:
+        print("[*] Failed to send notification!")
+
+
 
 def createOrUpdateHistory(
         timestamp: str,
@@ -124,7 +193,7 @@ def olderThan(seconds:int, timestamp:str):
     if (current_time - detection_time).total_seconds() >= seconds:
         return True
 
-def checkForDetections():
+def checkForDetection():
     print("[*] Reading log file...")
     global last_checked_line
     try:
@@ -151,16 +220,20 @@ def checkForDetections():
                     ):
                     continue
 
-                # Send the alert to the configured channel
-                sendToDiscord(
-                    alert["alert"]["signature"],
-                    alert["alert"]["severity"],
-                    alert["src_ip"],
-                    alert["src_port"],
-                    alert["dest_ip"],
-                    alert["dest_port"],
-                    alert["timestamp"]
-                )
+                # Prepare the alert data
+                alert_data = {
+                    "signature": alert["alert"]["signature"],
+                    "severity": alert["alert"]["severity"],
+                    "src_ip": alert["src_ip"],
+                    "src_port": alert["src_port"],
+                    "dst_ip": alert["dest_ip"],
+                    "dst_port": alert["dest_port"],
+                    "timestamp": alert["timestamp"]
+                }
+
+                # Send the alert to the configured channels
+                sendToDiscord(**alert_data)
+                sendToSlack(**alert_data)
 
                 # Update the detection history
                 createOrUpdateHistory(
@@ -168,6 +241,7 @@ def checkForDetections():
                     alert["alert"]["signature_id"]
                 )
 
+                # Update the last checked line
                 last_checked_line = i+1
     except Exception as e:
         print("[*] An error occurred while reading log file: " + str(e))
@@ -175,7 +249,7 @@ def checkForDetections():
 def main():
     try:
         while True:
-            checkForDetections()
+            checkForDetection()
             time.sleep(waiting_time)
     except KeyboardInterrupt:
         print("[*] Stopping notifier [*]")
