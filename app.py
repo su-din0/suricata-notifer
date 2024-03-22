@@ -1,26 +1,44 @@
 import json
 import requests
 import time
+import smtplib
 
 from datetime import datetime
 from dateutil.parser import parse
 from dateutil.tz import tzlocal
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
 
 # Configuration for the alert channels
+
+# Discord
+SEND_TO_DISCORD = False # Set to True to enable Discord notifications
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/00000" # Replace with your Discord webhook URL
+
+# Slack
+SEND_TO_SLACK = False # Set to True to enable Slack notifications
 SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/000000" # Replace with your Slack webhook URL
 
-SEND_TO_DISCORD = False # Set to True to enable Discord notifications
-SEND_TO_SLACK = False # Set to True to enable Slack notifications
+# Email
+SEND_TO_EMAIL = False # Set to True to enable Email notifications
+EMAIL_ADDRESS = "" # Replace with your email address
+EMAIL_PASSWORD = "" # Replace with your email password
+EMAIL_SMTP_SERVER = "" # Replace with your email SMTP server
+EMAIL_SMTP_PORT = 587 # Replace with your email SMTP port
+EMAIL_RECIPIENT = "" # Replace with the recipient email address
 
 # Path to the log file
 log_path = "/path/to/eve.json"
+
+# Path to the notifer log file
+own_log_path = "path/to/notifer_log.json"
 
 # Configurations
 last_checked_line = 0 # 0 means that the file will be read from the beginning
 waiting_time = 5 # 5 seconds
 time_between_detection = 30 # 30 seconds
-max_elapsed_time = 36000 #  1 hour
+max_elapsed_time = 3600 #  1 hour
 detection_history = [] # List of detections
 
 # Colors for the alerts
@@ -70,6 +88,31 @@ def buildSD(src_ip: str, src_port: int, dst_ip: str, dst_port: int):
 
     return result
 
+def printAndLog(message: str):
+    print(message)
+    with open(own_log_path, "a") as file:
+        data = {
+            "timestamp": datetime.now().isoformat(),
+            "message": message
+        }
+        file.write(json.dumps(data) + "\n")
+
+def createOrUpdateHistory(
+        timestamp: str,
+        signature_id: int,
+    ):
+    for detection in detection_history:
+        if detection["signature_id"] == signature_id:
+            detection["timestamp"] = timestamp
+            printAndLog("[*] Detection history updated!")
+            return
+
+    detection_history.append({
+        "timestamp": timestamp,
+        "signature_id": signature_id
+    })
+
+    printAndLog("[*] Detection history created!")
 
 def sendToDiscord(
         signature: str,
@@ -84,7 +127,7 @@ def sendToDiscord(
     if not SEND_TO_DISCORD:
         return
 
-    print("[*] Sending notification to Discord...")
+    printAndLog("[*] Sending notification to Discord...")
 
     color = colors["discord"].get(severity, colors["discord"]["default"])
 
@@ -119,9 +162,9 @@ def sendToDiscord(
     response = requests.post(DISCORD_WEBHOOK_URL, json=embed)
 
     if response.status_code == 204:
-        print("[*] Notification sent successfully!")
+        printAndLog("[*] Notification sent successfully!")
     else:
-        print("[*] Failed to send notification!")
+        printAndLog("[*] Failed to send notification!")
 
 def sendToSlack(
         signature: str,
@@ -136,7 +179,7 @@ def sendToSlack(
     if not SEND_TO_SLACK:
         return
 
-    print("[*] Sending notification to Slack...")
+    printAndLog("[*] Sending notification to Slack...")
     payload = {
         "text": "*An alert has been triggered by Suricata IDS.*",
         "attachments": [
@@ -179,28 +222,49 @@ def sendToSlack(
     response = requests.post(SLACK_WEBHOOK_URL, json=payload)
 
     if response.status_code == 200:
-        print("[*] Notification sent successfully!")
+        printAndLog("[*] Notification sent successfully!")
     else:
-        print("[*] Failed to send notification!")
+        printAndLog("[*] Failed to send notification!")
 
-
-
-def createOrUpdateHistory(
+def sendToEmail(
+        signature: str,
+        severity: int,
+        src_ip: str,
+        src_port: int,
+        dst_ip: str,
+        dst_port: int,
         timestamp: str,
-        signature_id: int,
     ):
-    for detection in detection_history:
-        if detection["signature_id"] == signature_id:
-            detection["timestamp"] = timestamp
-            print("[*] Detection history updated!")
-            return
 
-    detection_history.append({
-        "timestamp": timestamp,
-        "signature_id": signature_id
-    })
+    if not SEND_TO_EMAIL:
+        return
+    
+    printAndLog("[*] Sending notification to Email...")
 
-    print("[*] Detection history created!")
+    subject = f"Suricata Alert: {signature}"
+    body = f"""
+    An alert has been triggered by Suricata IDS.
+
+    Signature: {signature}
+
+    Severity: {matchSeverity(severity)}
+
+    Timestamp: {timestamp}
+
+    Source ➜ Destination: {buildSD(src_ip, src_port, dst_ip, dst_port)}
+    """
+
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = EMAIL_RECIPIENT
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+    with smtplib.SMTP(EMAIL_SMTP_SERVER, EMAIL_SMTP_PORT) as server:
+        server.starttls()
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.send_message(msg)
+        printAndLog("[*] Notification sent successfully!")
 
 def fileExists():
     try:
@@ -243,7 +307,7 @@ def olderThan(seconds:int, timestamp:str):
         return True
 
 def checkForDetection():
-    print("[*] Reading log file...")
+    printAndLog("[*] Reading log file...")
     global last_checked_line
     try:
         with open(log_path, "r") as file:
@@ -283,6 +347,7 @@ def checkForDetection():
                 # Send the alert to the configured channels
                 sendToDiscord(**alert_data)
                 sendToSlack(**alert_data)
+                sendToEmail(**alert_data)
 
                 # Update the detection history
                 createOrUpdateHistory(
@@ -293,7 +358,7 @@ def checkForDetection():
                 # Update the last checked line
                 last_checked_line = i+1
     except Exception as e:
-        print("[*] An error occurred while reading log file: " + str(e))
+        printAndLog("[*] An error occurred while reading log file: " + str(e))
 
 def InternetCheck():
     try:
@@ -313,25 +378,25 @@ def main():
             checkForDetection()
             time.sleep(waiting_time)
     except KeyboardInterrupt:
-        print("[*] Stopping notifier [*]")
+        printAndLog("[*] Stopping notifier [*]")
     
 # Entry point
 if __name__ == "__main__":
-    print("[*] Suricata IDS notifier started... [*]")
+    printAndLog("[*] Suricata IDS notifier started... [*]")
 
     # Check if the log file exists
     if not fileExists():
-        print("[*] Log file not found! Stoping notifier... [*]")
+        printAndLog("[*] Log file not found! Stoping notifier... [*]")
         exit()
     
     # Check if there is internet connection
     if not InternetCheck():
-        print("[*] No internet connection! Stoping notifier... [*]")
+        printAndLog("[*] No internet connection! Stoping notifier... [*]")
         exit()
 
     # Check if at least one alert channel is configured
-    if not SEND_TO_DISCORD and not SEND_TO_SLACK:
-        print("[*] No alert channels configured! Stoping notifier... [*]")
+    if not SEND_TO_DISCORD and not SEND_TO_SLACK and not SEND_TO_EMAIL:
+        printAndLog("[*] No alert channels configured! Stoping notifier... [*]")
         exit()
 
     # Start the notifier
